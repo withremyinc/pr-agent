@@ -12,6 +12,9 @@ inputs:
     description: 'Custom instructions telling the AI how to interpret the artifact. Leave empty for a sensible default.'
     required: false
     default: ''
+outputs:
+  review:
+    description: 'Structured JSON emitted by the review command.'
 runs:
   using: 'docker'
   image: 'Dockerfile.github_action_dockerhub'

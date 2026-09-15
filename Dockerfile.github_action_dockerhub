@@ -1,1 +1,3 @@
-FROM pragent/pr-agent:github_action
+# Keep the reviewed runtime immutable while allowing this fork to expose
+# additional GitHub Action metadata around its structured outputs.
+FROM pragent/pr-agent@sha256:548b760b81ab4b3f729182428695ccc1194bbf87528c2b1e2b2b07e5223af7b6
