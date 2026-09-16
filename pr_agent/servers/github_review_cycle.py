@@ -274,7 +274,18 @@ async def analyze(pr_url):
         findings.append(Finding(suggestion["relevant_file"].strip(), int(suggestion["relevant_lines_start"]),
                                 int(suggestion["relevant_lines_end"]), body))
 
-    complete = (not reviewer.remaining_files_list and not reviewer.review_failed_chunk_count
+    unanchorable = []
+    publishable = []
+    for finding in findings:
+        if suggestions._is_suggestion_line_range_valid({
+            "relevant_file": finding.path, "relevant_lines_start": finding.start,
+            "relevant_lines_end": finding.end,
+        }):
+            publishable.append(finding)
+        else:
+            unanchorable.append(f"{finding.path}:{finding.start}-{finding.end}")
+
+    complete = (not unanchorable and not reviewer.remaining_files_list and not reviewer.review_failed_chunk_count
                 and not suggestions.remaining_files_list and not suggestions.failed_chunk_count
                 and not suggestions.parse_failure_count
                 and len(data["review"]["key_issues_to_review"]) < settings.pr_reviewer.num_max_findings
@@ -284,13 +295,14 @@ async def analyze(pr_url):
                         for prediction in suggestions.prediction_list))
     complete = complete and settings.pr_code_suggestions.suggestions_score_threshold == 0
     details = json.dumps({
+        "unanchorable_findings": unanchorable,
         "review_omitted_files": reviewer.remaining_files_list,
         "suggestions_omitted_files": suggestions.remaining_files_list,
         "failed_review_chunks": reviewer.review_failed_chunk_count,
         "failed_suggestion_chunks": suggestions.failed_chunk_count,
         "security_concerns": data["review"].get("security_concerns"),
     })
-    return findings, complete, details
+    return publishable, complete, details
 
 
 async def recheck(github, thread, head):
@@ -347,10 +359,17 @@ async def review_cycle(github, number, expected_head=None):
                 raise RuntimeError("PR changed during publication")
             if fingerprint not in existing_open:
                 # Actions cannot change thread resolution. Redetected findings get a new open thread.
-                github.publish(number, head, finding)
+                try:
+                    github.publish(number, head, finding)
+                except requests.HTTPError as error:
+                    if error.response.status_code != 422:
+                        raise
+                    complete = False
+                    details += f"\nGitHub rejected the inline finding at {finding.path}:{finding.start}-{finding.end}."
         published = {marker(thread.body) for thread in github.threads(number) if not thread.resolved}
         if not by_marker.keys() <= published:
-            raise RuntimeError("Not all findings were published inline")
+            complete = False
+            details += "\nNot all findings were published inline."
         if not github.unchanged(number, head, base):
             raise RuntimeError("PR changed before completion")
         receipt.complete = complete
@@ -389,7 +408,10 @@ def resolve_verified_threads(github, number, receipt, approver):
         })
     except Exception:
         for thread in resolved:
-            github.resolve(thread, False)
+            try:
+                github.resolve(thread, False)
+            except Exception:
+                get_logger().exception(f"Failed to reopen thread {thread.id} during rollback")
         raise
 
 
@@ -489,12 +511,22 @@ async def run(mode, payload):
     elif mode == "approve":
         if os.environ["GITHUB_EVENT_NAME"] not in {"workflow_run", "schedule", "workflow_dispatch"}:
             raise ValueError("Approval must run in a trusted workflow")
+        settings = get_settings().github_review_cycle
+        if not settings.approver.strip() or not settings.review_workflow.strip():
+            raise ValueError("Approve mode requires an explicit approver and review_workflow")
+        failures = []
         for pr in github.pages("pulls"):
             try:
                 reconcile_approval(github, pr["number"])
-            except Exception:
+            except Exception as error:
                 get_logger().exception(f"Qodo approval failed for PR #{pr['number']}")
-                raise
+                failures.append(error)
+                try:
+                    revoke_approval(github, pr["number"])
+                except Exception:
+                    get_logger().exception(f"Could not revoke Qodo approval for PR #{pr['number']}")
+        if failures:
+            raise ExceptionGroup("Qodo approval reconciliation failed", failures)
     else:
         raise ValueError(f"Unknown GitHub review cycle mode: {mode}")
     if os.getenv("GITHUB_OUTPUT"):

@@ -33,7 +33,6 @@ from pr_agent.algo.utils import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
     add_comment_identity,
-    clip_tokens,
     comment_matches_identity,
     format_pr_code_suggestions_header,
     get_max_tokens,
@@ -1863,8 +1862,8 @@ class PRCodeSuggestions:
                     token_count = self.token_handler.count_tokens(patch_final)
                     if token_count > max_tokens_full - delta_output:
                         get_logger().warning(
-                            f"Token count {token_count} exceeds the limit {max_tokens_full - delta_output}. clipping the tokens")
-                        patch_final = clip_tokens(patch_final, max_tokens_full - delta_output)
+                            f"Token count {token_count} exceeds the limit {max_tokens_full - delta_output}. Repacking numbered hunks")
+                        return []
                     patches_diff_list.append(patch_final)
                 return patches_diff_list
             except Exception as e:

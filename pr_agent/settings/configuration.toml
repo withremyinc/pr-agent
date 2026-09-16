@@ -272,8 +272,8 @@ publish_as_check_run = false # when true, publish review/description/improve out
 
 [github_review_cycle]
 comment_author = "github-actions[bot]"
-approver = "remy-ops-bot"
-review_workflow = ".github/workflows/qodo-code-review.yml"
+approver = "" # required only in approve mode
+review_workflow = "" # required only in approve mode
 max_rechecks = 30
 recheck_max_tokens = 48000
 recheck_instructions = """

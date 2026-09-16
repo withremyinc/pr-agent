@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from pr_agent.servers import github_review_cycle as cycle
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 class FakeGitHub:
@@ -105,6 +106,11 @@ def environment(monkeypatch):
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
     monkeypatch.setattr(cycle, "analyze", AsyncMock(return_value=([], True, "complete")))
     monkeypatch.setattr(cycle, "recheck", AsyncMock(return_value=cycle.Recheck(verdict="open", reason="Still broken")))
+    snapshot = snapshot_settings(("github_review_cycle.approver", "github_review_cycle.review_workflow"))
+    cycle.get_settings().set("github_review_cycle.approver", "remy-ops-bot")
+    cycle.get_settings().set("github_review_cycle.review_workflow", ".github/workflows/qodo-code-review.yml")
+    yield
+    restore_settings(snapshot)
 
 
 def old_finding(github, resolved=False):
@@ -225,8 +231,9 @@ async def test_unpublished_finding_blocks_completion(monkeypatch):
     finding = cycle.Finding("src.ts", 1, 1, "Defect")
     monkeypatch.setattr(cycle, "analyze", AsyncMock(return_value=([finding], True, "complete")))
     github.publish = lambda *args: None
-    with pytest.raises(RuntimeError, match="Not all findings"):
-        await cycle.review_cycle(github, 7)
+    receipt = await cycle.review_cycle(github, 7)
+    assert not receipt.complete
+    assert "Not all findings" in github.checks[-1]["output"]["text"]
     assert not cycle.approve_if_ready(github, 7)
 
 
@@ -367,7 +374,7 @@ async def test_old_event_cannot_review_a_newer_commit():
 
 @pytest.mark.parametrize("defect", [None, "review-omission", "suggestion-omission", "review-chunk",
                                      "suggestion-chunk", "parse", "security", "finding-limit",
-                                     "suggestion-limit"])
+                                     "suggestion-limit", "invalid-range"])
 async def test_analysis_completeness_uses_both_passes_and_limits(monkeypatch, defect):
     from types import SimpleNamespace
 
@@ -380,6 +387,7 @@ async def test_analysis_completeness_uses_both_passes_and_limits(monkeypatch, de
     suggestions = SimpleNamespace(
         run=AsyncMock(), data={"code_suggestions": []}, remaining_files_list=[],
         failed_chunk_count=0, parse_failure_count=0, prediction_list=[{"code_suggestions": []}],
+        _is_suggestion_line_range_valid=lambda suggestion: defect != "invalid-range",
     )
     if defect == "review-omission":
         reviewer.remaining_files_list = ["unreviewed.ts"]
@@ -393,11 +401,11 @@ async def test_analysis_completeness_uses_both_passes_and_limits(monkeypatch, de
         suggestions.parse_failure_count = 1
     elif defect == "security":
         data["review"]["security_concerns"] = "Unsafe SQL interpolation"
-    elif defect == "finding-limit":
+    elif defect in {"finding-limit", "invalid-range"}:
         data["review"]["key_issues_to_review"] = [
             {"relevant_file": "src.ts", "start_line": 1, "end_line": 1,
              "issue_header": "Bug", "issue_content": "Details"}
-        ] * cycle.get_settings().pr_reviewer.num_max_findings
+        ] * (cycle.get_settings().pr_reviewer.num_max_findings if defect == "finding-limit" else 1)
     elif defect == "suggestion-limit":
         suggestions.prediction_list = [{"code_suggestions": [None]
                                        * cycle.get_settings().pr_code_suggestions.num_code_suggestions_per_chunk}]
@@ -441,3 +449,79 @@ async def test_analysis_exception_restores_publication_settings(monkeypatch):
     with pytest.raises(RuntimeError):
         await REAL_ANALYZE("https://github.com/org/repo/pull/7")
     assert cycle.get_settings().config.publish_output == previous
+
+
+async def test_rejected_inline_finding_does_not_hide_later_findings(monkeypatch):
+    github = FakeGitHub()
+    bad = cycle.Finding("missing.ts", 900, 901, "Cannot anchor")
+    good = cycle.Finding("src.ts", 1, 1, "Publish this")
+    monkeypatch.setattr(cycle, "analyze", AsyncMock(return_value=([bad, good], True, "complete")))
+    publish = github.publish
+
+    def reject_bad(number, head, finding):
+        if finding == bad:
+            response = cycle.requests.Response()
+            response.status_code = 422
+            raise cycle.requests.HTTPError(response=response)
+        publish(number, head, finding)
+
+    github.publish = reject_bad
+    receipt = await cycle.review_cycle(github, 7)
+    assert github.publications == [good]
+    assert not receipt.complete
+    assert "missing.ts:900-901" in github.checks[-1]["output"]["text"]
+    assert not cycle.approve_if_ready(github, 7)
+
+
+def test_rollback_attempts_every_thread_and_preserves_original_error():
+    github = FakeGitHub()
+    old_finding(github)
+    github.current_threads.append(replace(github.current_threads[0], id="other"))
+    receipt = cycle.Receipt(head="head", base="base", run_id=123, attempt=1, complete=True,
+                            fixed_threads=["old", "other"])
+    resolve = github.resolve
+
+    def fail_first_reopen(thread, resolved):
+        if thread.id == "old" and not resolved:
+            raise RuntimeError("rollback failed")
+        resolve(thread, resolved)
+
+    github.resolve = fail_first_reopen
+    github.request = Mock(side_effect=RuntimeError("receipt write failed"))
+    with pytest.raises(RuntimeError, match="receipt write failed"):
+        cycle.resolve_verified_threads(github, 7, receipt, github.login)
+    assert not github.current_threads[1].resolved
+
+
+async def test_sweep_processes_later_prs_and_signals_failure(monkeypatch):
+    github = Mock()
+    github.pages.return_value = [{"number": 1}, {"number": 2}]
+    monkeypatch.setenv("GITHUB_REPOSITORY", "org/repo")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+    monkeypatch.setattr(cycle, "GitHub", lambda *args: github)
+    reconciled = []
+
+    def reconcile(client, number):
+        if number == 1:
+            raise RuntimeError("first PR unavailable")
+        reconciled.append(number)
+
+    monkeypatch.setattr(cycle, "reconcile_approval", reconcile)
+    revoke = Mock()
+    monkeypatch.setattr(cycle, "revoke_approval", revoke)
+    with pytest.raises(ExceptionGroup, match="reconciliation failed") as failure:
+        await cycle.run("approve", {})
+    assert reconciled == [2]
+    revoke.assert_called_once_with(github, 1)
+    assert str(failure.value.exceptions[0]) == "first PR unavailable"
+
+
+@pytest.mark.parametrize("missing", ["approver", "review_workflow"])
+async def test_approve_mode_requires_explicit_configuration(monkeypatch, missing):
+    cycle.get_settings().set(f"github_review_cycle.{missing}", "")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "org/repo")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+    with pytest.raises(ValueError, match="explicit approver and review_workflow"):
+        await cycle.run("approve", {})
