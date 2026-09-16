@@ -121,7 +121,8 @@ class GitHub:
     def graphql(self, query, variables):
         data = self.request("POST", "/graphql", json={"query": query, "variables": variables})
         if data.get("errors"):
-            raise RuntimeError("GitHub GraphQL request failed")
+            messages = "; ".join(error["message"] for error in data["errors"])
+            raise RuntimeError(f"GitHub GraphQL request failed: {messages}")
         return data["data"]
 
     def threads(self, number):
