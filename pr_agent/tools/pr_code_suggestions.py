@@ -33,7 +33,6 @@ from pr_agent.algo.utils import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
     add_comment_identity,
-    clip_tokens,
     comment_matches_identity,
     format_pr_code_suggestions_header,
     get_max_tokens,
@@ -1763,31 +1762,29 @@ class PRCodeSuggestions:
         self.failed_chunk_count = 0
         self.total_chunk_count = 0
         self.parse_failure_count = 0
+        self.remaining_files_list = []
         # get PR diff
         if get_settings().pr_code_suggestions.decouple_hunks:
-            self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
-                                                        self.token_handler,
-                                                        model,
-                                                        max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                        add_line_numbers=True)  # decouple hunk with line numbers
+            self.patches_diff_list, self.remaining_files_list = get_pr_multi_diffs(
+                self.git_provider, self.token_handler, model,
+                max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                add_line_numbers=True, return_remaining_files=True)
             self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)  # decouple hunk
 
         else:
             # non-decoupled hunks
-            self.patches_diff_list_no_line_numbers = get_pr_multi_diffs(self.git_provider,
-                                                                        self.token_handler,
-                                                                        model,
-                                                                        max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                                        add_line_numbers=False)
+            self.patches_diff_list_no_line_numbers, self.remaining_files_list = get_pr_multi_diffs(
+                self.git_provider, self.token_handler, model,
+                max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                add_line_numbers=False, return_remaining_files=True)
             self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
                 self.patches_diff_list_no_line_numbers, model)
             if not self.patches_diff_list:
                 # fallback to decoupled hunks
-                self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
-                                                            self.token_handler,
-                                                            model,
-                                                            max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                            add_line_numbers=True)  # decouple hunk with line numbers
+                self.patches_diff_list, self.remaining_files_list = get_pr_multi_diffs(
+                    self.git_provider, self.token_handler, model,
+                    max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                    add_line_numbers=True, return_remaining_files=True)
                 self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
 
         if self.patches_diff_list:
@@ -1865,8 +1862,8 @@ class PRCodeSuggestions:
                     token_count = self.token_handler.count_tokens(patch_final)
                     if token_count > max_tokens_full - delta_output:
                         get_logger().warning(
-                            f"Token count {token_count} exceeds the limit {max_tokens_full - delta_output}. clipping the tokens")
-                        patch_final = clip_tokens(patch_final, max_tokens_full - delta_output)
+                            f"Token count {token_count} exceeds the limit {max_tokens_full - delta_output}. Repacking numbered hunks")
+                        return []
                     patches_diff_list.append(patch_final)
                 return patches_diff_list
             except Exception as e:

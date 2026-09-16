@@ -1,3 +1,6 @@
-# Keep the reviewed runtime immutable while allowing this fork to expose
-# additional GitHub Action metadata around its structured outputs.
+FROM ghcr.io/astral-sh/uv:0.12.10 AS uv
 FROM pragent/pr-agent@sha256:548b760b81ab4b3f729182428695ccc1194bbf87528c2b1e2b2b07e5223af7b6
+COPY --from=uv /uv /usr/local/bin/uv
+COPY pyproject.toml uv.lock /app/
+RUN uv sync --frozen --no-dev --no-install-project
+COPY pr_agent /app/pr_agent
