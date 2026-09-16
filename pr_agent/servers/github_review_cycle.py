@@ -135,7 +135,7 @@ class GitHub:
                     pullRequest(number:$number) {
                       reviewThreads(first:100, after:$cursor) {
                         pageInfo { hasNextPage endCursor }
-                        nodes { id isResolved path comments(first:1) { nodes { body author { login } } } }
+                        nodes { id isResolved path comments(first:1) { nodes { body author { __typename login } } } }
                       }
                     }
                   }
@@ -144,7 +144,14 @@ class GitHub:
             connection = data["repository"]["pullRequest"]["reviewThreads"]
             for node in connection["nodes"]:
                 root = node["comments"]["nodes"][0]
-                if root["author"] and root["author"]["login"] == self.author and marker(root["body"]):
+                author = root["author"]
+                if not author:
+                    continue
+                login = author["login"]
+                # GraphQL Bot.login omits REST's reserved [bot] suffix.
+                if author["__typename"] == "Bot" and not login.endswith("[bot]"):
+                    login += "[bot]"
+                if login == self.author and marker(root["body"]):
                     result.append(Thread(node["id"], node["isResolved"], root["body"], node["path"]))
             if not connection["pageInfo"]["hasNextPage"]:
                 return result

@@ -270,7 +270,8 @@ def test_thread_discovery_paginates_and_requires_marker_and_author(monkeypatch):
 
     def node(id_, author, text):
         return {"id": id_, "isResolved": False, "path": "src.ts",
-                "comments": {"nodes": [{"body": text, "author": {"login": author}}]}}
+                "comments": {"nodes": [{"body": text, "author": {
+                    "login": author, "__typename": "Bot" if author == "github-actions[bot]" else "User"}}]}}
 
     pages = [
         {"nodes": [node("human", "author", body), node("unmarked", "github-actions[bot]", "hello")],
@@ -283,6 +284,25 @@ def test_thread_discovery_paginates_and_requires_marker_and_author(monkeypatch):
     monkeypatch.setattr(github, "graphql", graphql)
     assert [thread.id for thread in github.threads(7)] == ["owned", "legacy"]
     assert graphql.call_args.args[1]["cursor"] == "next"
+
+
+@pytest.mark.parametrize("kind,login,owned", [
+    ("Bot", "github-actions", True),
+    ("Bot", "github-actions[bot]", True),
+    ("User", "github-actions", False),
+    ("Bot", "other-reviewer", False),
+])
+def test_graphql_bot_identity_matches_rest_without_trusting_user_lookalikes(monkeypatch, kind, login, owned):
+    github = cycle.GitHub("org/repo", "not-a-real-token")
+    body = cycle.Finding("src.ts", 1, 1, "Defect").marker
+    data = {"repository": {"pullRequest": {"reviewThreads": {
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+        "nodes": [{"id": "thread", "isResolved": False, "path": "src.ts", "comments": {"nodes": [
+            {"body": body, "author": {"__typename": kind, "login": login}}
+        ]}}],
+    }}}}
+    monkeypatch.setattr(github, "graphql", lambda *args: data)
+    assert bool(github.threads(7)) == owned
 
 
 def test_github_graphql_errors_are_not_an_empty_thread_list(monkeypatch):
