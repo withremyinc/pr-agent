@@ -177,7 +177,7 @@ async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_mer
         )]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])):
             tool._get_prediction = fake_get_prediction
 
             data = await tool.prepare_prediction_main("primary-model")
@@ -300,7 +300,7 @@ async def test_prepare_prediction_main_keeps_successful_chunks_when_one_parallel
         return {"code_suggestions": [_valid_suggestion(relevant_file="chunk-a.py")]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])):
             tool._get_prediction = fake_get_prediction
 
             data = await tool.prepare_prediction_main("primary-model")
@@ -334,7 +334,7 @@ async def test_prepare_prediction_main_propagates_chunk_cancellation_after_waiti
         return {"code_suggestions": []}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])):
             tool._get_prediction = fake_get_prediction
 
             with pytest.raises(asyncio.CancelledError):
@@ -364,9 +364,9 @@ async def test_prepare_prediction_main_keeps_processing_after_one_sequential_chu
         return {"code_suggestions": [_valid_suggestion(relevant_file=f"{patches_diff}.py")]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=[
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=([
             "chunk-a", "chunk-b", "chunk-c"
-        ]):
+        ], [])):
             tool._get_prediction = fake_get_prediction
 
             data = await tool.prepare_prediction_main("primary-model")
@@ -408,7 +408,7 @@ async def test_prepare_prediction_main_keeps_outer_fallback_when_all_chunks_fail
         return {"code_suggestions": [_valid_suggestion(relevant_file=f"{patches_diff}.py")]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])):
             tool._get_prediction = fake_get_prediction
 
             data = await retry_with_fallback_models(tool.prepare_prediction_main)
@@ -446,8 +446,8 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
 
     try:
         with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=[
-            ["stale unnumbered chunk"],
-            ["1 fallback-a", "2 fallback-b"],
+            (["stale unnumbered chunk"], []),
+            (["1 fallback-a", "2 fallback-b"], []),
         ]):
             tool._get_prediction = fake_get_prediction
 

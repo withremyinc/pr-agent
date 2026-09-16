@@ -206,6 +206,13 @@ async def run_action():
     except Exception as e:
         get_logger().info(f"github action: failed to apply language-specific instructions: {e}")
 
+    cycle_mode = get_settings().get("github_action_config.review_cycle_mode", "disabled")
+    if cycle_mode != "disabled":
+        from pr_agent.servers.github_review_cycle import run
+
+        await run(cycle_mode, event_payload)
+        return
+
     # Handle pull request opened event
     if GITHUB_EVENT_NAME == "pull_request" or GITHUB_EVENT_NAME == "pull_request_target":
         # Inject artifact context here so it runs after apply_repo_settings above

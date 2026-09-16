@@ -1763,31 +1763,29 @@ class PRCodeSuggestions:
         self.failed_chunk_count = 0
         self.total_chunk_count = 0
         self.parse_failure_count = 0
+        self.remaining_files_list = []
         # get PR diff
         if get_settings().pr_code_suggestions.decouple_hunks:
-            self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
-                                                        self.token_handler,
-                                                        model,
-                                                        max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                        add_line_numbers=True)  # decouple hunk with line numbers
+            self.patches_diff_list, self.remaining_files_list = get_pr_multi_diffs(
+                self.git_provider, self.token_handler, model,
+                max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                add_line_numbers=True, return_remaining_files=True)
             self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)  # decouple hunk
 
         else:
             # non-decoupled hunks
-            self.patches_diff_list_no_line_numbers = get_pr_multi_diffs(self.git_provider,
-                                                                        self.token_handler,
-                                                                        model,
-                                                                        max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                                        add_line_numbers=False)
+            self.patches_diff_list_no_line_numbers, self.remaining_files_list = get_pr_multi_diffs(
+                self.git_provider, self.token_handler, model,
+                max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                add_line_numbers=False, return_remaining_files=True)
             self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
                 self.patches_diff_list_no_line_numbers, model)
             if not self.patches_diff_list:
                 # fallback to decoupled hunks
-                self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
-                                                            self.token_handler,
-                                                            model,
-                                                            max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                            add_line_numbers=True)  # decouple hunk with line numbers
+                self.patches_diff_list, self.remaining_files_list = get_pr_multi_diffs(
+                    self.git_provider, self.token_handler, model,
+                    max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                    add_line_numbers=True, return_remaining_files=True)
                 self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
 
         if self.patches_diff_list:
