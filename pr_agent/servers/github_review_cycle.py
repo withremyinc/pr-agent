@@ -33,6 +33,7 @@ class Receipt(BaseModel):
     run_id: int
     attempt: int
     complete: bool
+    fixed_threads: list[str] = Field(default_factory=list)
 
 
 class Recheck(BaseModel):
@@ -316,7 +317,6 @@ async def review_cycle(github, number, expected_head=None):
                       attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]), complete=False)
     check_id = github.start_check(head)
     reason = "Review did not complete"
-    resolved = []
     try:
         before = github.threads(number)
         findings, complete, details = await analyze(pr["html_url"])
@@ -341,38 +341,56 @@ async def review_cycle(github, number, expected_head=None):
         if not github.unchanged(number, head, base):
             raise RuntimeError("PR changed during analysis")
         current = github.threads(number)
-        existing = {marker(thread.body): thread for thread in current}
+        existing_open = {marker(thread.body) for thread in current if not thread.resolved}
         for fingerprint, finding in by_marker.items():
             if not github.unchanged(number, head, base):
                 raise RuntimeError("PR changed during publication")
-            if fingerprint in existing:
-                if existing[fingerprint].resolved:
-                    # A newly detected finding is not suppressed forever by a previous resolution.
-                    github.resolve(existing[fingerprint], False)
-            else:
+            if fingerprint not in existing_open:
+                # Actions cannot change thread resolution. Redetected findings get a new open thread.
                 github.publish(number, head, finding)
-        published = {marker(thread.body) for thread in github.threads(number)}
+        published = {marker(thread.body) for thread in github.threads(number) if not thread.resolved}
         if not by_marker.keys() <= published:
             raise RuntimeError("Not all findings were published inline")
-        if complete:
-            for thread, verdict in verdicts:
-                if verdict.verdict == "fixed":
-                    if not github.unchanged(number, head, base):
-                        raise RuntimeError("PR changed during thread resolution")
-                    github.resolve(thread, True)
-                    resolved.append(thread)
         if not github.unchanged(number, head, base):
             raise RuntimeError("PR changed before completion")
         receipt.complete = complete
+        if complete:
+            receipt.fixed_threads = [thread.id for thread, verdict in verdicts if verdict.verdict == "fixed"]
         reason = ("All findings published. Unresolved threads block approval."
                   if complete else "Coverage, parsing, a finding limit, or security concerns require another review.")
         reason += "\n\n" + details
     finally:
-        if not receipt.complete and resolved:
-            for thread in resolved:
-                github.resolve(thread, False)
         github.finish_check(check_id, receipt, reason)
     return receipt
+
+
+def resolve_verified_threads(github, number, receipt, approver):
+    if not receipt.fixed_threads:
+        return
+    applied_marker = f"<!-- qodo-resolutions:v1:{receipt.run_id}:{receipt.attempt} -->"
+    reviews = list(github.pages(f"pulls/{number}/reviews"))
+    if any(review["user"]["login"] == approver and applied_marker in review.get("body", "") for review in reviews):
+        return  # A later manual reopen must not be undone by replaying the same receipt.
+    resolved = []
+    try:
+        for thread in github.threads(number):
+            if thread.id not in receipt.fixed_threads or thread.resolved:
+                continue
+            if (not github.unchanged(number, receipt.head, receipt.base)
+                    or github.latest_review_run(receipt.head) != receipt.run_id):
+                raise RuntimeError("PR changed before thread resolution")
+            github.resolve(thread, True)
+            resolved.append(thread)
+        if not github.unchanged(number, receipt.head, receipt.base):
+            raise RuntimeError("PR changed during thread resolution")
+        github.request("POST", github.repo(f"pulls/{number}/reviews"), json={
+            "event": "COMMENT", "commit_id": receipt.head,
+            "body": f"Qodo applied the confirmed-fix decisions from review run {receipt.run_id}.\n\n{applied_marker}",
+        })
+    except Exception:
+        for thread in resolved:
+            github.resolve(thread, False)
+        raise
 
 
 def approve_if_ready(github, number, *, publish=True):
@@ -409,11 +427,13 @@ def approve_if_ready(github, number, *, publish=True):
         return False
     if artifact != receipt or not github.trusted_workflow(head, base):
         return False
-    if any(not thread.resolved for thread in github.threads(number)):
-        return False
     approver = github.request("GET", "/user")["login"]
     if approver != get_settings().github_review_cycle.approver or approver == pr["user"]["login"]:
         raise ValueError("Approval token must belong to the configured bot, not the PR author")
+    if publish:
+        resolve_verified_threads(github, number, receipt, approver)
+    if any(not thread.resolved for thread in github.threads(number)):
+        return False
     reviews = list(github.pages(f"pulls/{number}/reviews"))
     previous = [review for review in reviews if review["user"]["login"] == approver
                 and review["commit_id"] == head and review["state"] != "COMMENTED"]

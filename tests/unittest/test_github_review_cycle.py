@@ -86,7 +86,7 @@ class FakeGitHub:
         if path == "actions/runs/123":
             return self.run
         if method == "POST" and path == "pulls/7/reviews":
-            self.reviews.append({"id": len(self.reviews) + 1, "state": kwargs["json"]["event"] + "D",
+            self.reviews.append({"id": len(self.reviews) + 1, "state": {"COMMENT": "COMMENTED", "APPROVE": "APPROVED"}[kwargs["json"]["event"]],
                                  "user": {"login": self.login}, "commit_id": kwargs["json"]["commit_id"],
                                  "body": kwargs["json"]["body"]})
             return {}
@@ -145,9 +145,14 @@ async def test_explicit_fixed_verdict_resolves_and_allows_approval(monkeypatch):
     github = FakeGitHub()
     old_finding(github)
     monkeypatch.setattr(cycle, "recheck", AsyncMock(return_value=cycle.Recheck(verdict="fixed", reason="Bounds check added")))
-    await cycle.review_cycle(github, 7)
-    assert github.resolutions == [("old", True)]
+    receipt = await cycle.review_cycle(github, 7)
+    assert not github.resolutions
+    assert receipt.fixed_threads == ["old"]
     assert cycle.approve_if_ready(github, 7)
+    assert github.resolutions == [("old", True)]
+    github.resolve(github.current_threads[0], False)
+    assert not cycle.approve_if_ready(github, 7)
+    assert not github.current_threads[0].resolved
 
 
 @pytest.mark.parametrize("verdict", ["open", "uncertain"])
@@ -182,7 +187,7 @@ async def test_failed_recheck_leaves_every_thread_open_and_records_failure(monke
     assert not cycle.approve_if_ready(github, 7)
 
 
-async def test_repeated_run_deduplicates_and_redetected_finding_reopens(monkeypatch):
+async def test_repeated_run_deduplicates_and_redetected_finding_gets_an_open_thread(monkeypatch):
     github = FakeGitHub()
     finding = cycle.Finding("src.ts", 1, 1, "New defect")
     monkeypatch.setattr(cycle, "analyze", AsyncMock(return_value=([finding], True, "complete")))
@@ -191,8 +196,9 @@ async def test_repeated_run_deduplicates_and_redetected_finding_reopens(monkeypa
     assert len(github.publications) == 1
     github.resolve(github.current_threads[0], True)
     await cycle.review_cycle(github, 7)
-    assert not github.current_threads[0].resolved
-    assert len(github.publications) == 1
+    assert github.current_threads[0].resolved
+    assert not github.current_threads[1].resolved
+    assert len(github.publications) == 2
 
 
 async def test_new_push_during_resolution_reopens_what_this_run_resolved(monkeypatch):
@@ -206,9 +212,10 @@ async def test_new_push_during_resolution_reopens_what_this_run_resolved(monkeyp
         if resolved:
             github.pull["head"]["sha"] = "new-head"
 
+    await cycle.review_cycle(github, 7)
     github.resolve = race
     with pytest.raises(RuntimeError, match="changed"):
-        await cycle.review_cycle(github, 7)
+        cycle.approve_if_ready(github, 7)
     assert not github.current_threads[0].resolved
     assert not cycle.approve_if_ready(github, 7)
 
@@ -401,6 +408,28 @@ async def test_analysis_completeness_uses_both_passes_and_limits(monkeypatch, de
     assert complete == (defect is None)
     assert cycle.get_settings().config.publish_output == previous
     assert "security_concerns" in details
+
+
+@pytest.mark.parametrize("blocked_by", ["workflow", "artifact", "identity"])
+async def test_fixed_receipt_cannot_resolve_before_trust_and_identity_checks(monkeypatch, blocked_by):
+    github = FakeGitHub()
+    old_finding(github)
+    monkeypatch.setattr(cycle, "recheck", AsyncMock(return_value=cycle.Recheck(verdict="fixed", reason="Fixed")))
+    await cycle.review_cycle(github, 7)
+    if blocked_by == "workflow":
+        github.trusted_workflow = lambda *args: False
+    elif blocked_by == "artifact":
+        receipt = github.receipt_artifact(123, 7).model_copy(update={"fixed_threads": []})
+        github.receipt_artifact = lambda *args: receipt
+    else:
+        github.login = "wrong-user"
+    if blocked_by == "identity":
+        with pytest.raises(ValueError):
+            cycle.approve_if_ready(github, 7)
+    else:
+        assert not cycle.approve_if_ready(github, 7)
+    assert not github.resolutions
+    assert not github.reviews
 
 
 async def test_analysis_exception_restores_publication_settings(monkeypatch):
