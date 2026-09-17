@@ -15,3 +15,4 @@ def test_code_suggestion_prompts_require_json_output():
         assert "valid JSON" in prompt
         assert "valid YAML" not in prompt
         assert "```yaml" not in prompt
+        assert "```json" not in prompt

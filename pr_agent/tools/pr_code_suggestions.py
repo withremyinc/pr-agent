@@ -1113,9 +1113,10 @@ class PRCodeSuggestions:
             raise CodeSuggestionsParseError("Code suggestions JSON must contain a code_suggestions array")
 
         # remove or edit invalid suggestions
+        raw_suggestions = data['code_suggestions']
         suggestion_list = []
         one_sentence_summary_list = []
-        for i, suggestion in enumerate(data['code_suggestions']):
+        for i, suggestion in enumerate(raw_suggestions):
             try:
                 needed_keys = ['one_sentence_summary', 'label', 'relevant_file']
                 is_valid_keys = True
@@ -1152,6 +1153,10 @@ class PRCodeSuggestions:
                         f"Skipping suggestion {i + 1}, because it does not contain 'existing_code' or 'improved_code': {suggestion}")
             except Exception as e:
                 get_logger().error(f"Error processing suggestion {i + 1}: {suggestion}, error: {e}")
+        if raw_suggestions and not suggestion_list:
+            raise CodeSuggestionsParseError(
+                "Code suggestions JSON contained no complete suggestion objects"
+            )
         data['code_suggestions'] = suggestion_list
 
         return data

@@ -62,7 +62,6 @@ class PRCodeSuggestionsFeedback(BaseModel):
 
 
 Example output:
-```json
 {
   "code_suggestions": [
     {
@@ -75,7 +74,6 @@ Example output:
     }
   ]
 }
-```
 
 Return exactly one valid JSON object. Do not use Markdown fences or add text outside the JSON object.
 """
@@ -96,7 +94,6 @@ Below are {{ num_code_suggestions }} AI-generated code suggestions for the Pull 
 
 
 Example output:
-```json
 {
   "code_suggestions": [
     {
@@ -109,7 +106,6 @@ Example output:
     }
   ]
 }
-```
 (replace '...' with actual content)
 {%- endif %}
 

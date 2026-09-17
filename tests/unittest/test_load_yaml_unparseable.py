@@ -69,8 +69,16 @@ def test_generate_labels_membership_check_does_not_raise():
     assert "labels" not in tool.data
 
 
-@pytest.mark.parametrize("payload", ['{}', '{"code_suggestions": 5}', '{"code_suggestions": {"a": 1}}'])
-def test_a_non_list_code_suggestions_value_is_rejected(payload):
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{}',
+        '{"code_suggestions": 5}',
+        '{"code_suggestions": {"a": 1}}',
+        '{"code_suggestions": [{}]}',
+    ],
+)
+def test_an_invalid_code_suggestions_value_is_rejected(payload):
     from pr_agent.tools.pr_code_suggestions import CodeSuggestionsParseError, PRCodeSuggestions
 
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
