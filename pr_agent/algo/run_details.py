@@ -39,6 +39,10 @@ class RunDetails:
     # reaches the collector, e.g. streaming responses or the langchain handler.
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Reasoning tokens are a subset of completion tokens for providers that expose
+    # completion_tokens_details. Keep them separate for review-depth observability
+    # without adding them to the total twice.
+    reasoning_tokens: int = 0
     # Provider-reported total when available, otherwise derived from prompt + completion.
     # Counts failed fallback attempts as well, so it reflects what the run really cost,
     # while `model_used` names only the model behind the final answer.
@@ -116,11 +120,18 @@ def add_token_usage(usage) -> None:
         return
     prompt_tokens = _read_token_field(usage, "prompt_tokens")
     completion_tokens = _read_token_field(usage, "completion_tokens")
+    completion_details = (
+        usage.get("completion_tokens_details")
+        if isinstance(usage, dict)
+        else getattr(usage, "completion_tokens_details", None)
+    )
+    reasoning_tokens = _read_token_field(completion_details, "reasoning_tokens")
     total_tokens = _read_token_field(usage, "total_tokens") or (
         prompt_tokens + completion_tokens
     )
     details.prompt_tokens += prompt_tokens
     details.completion_tokens += completion_tokens
+    details.reasoning_tokens += reasoning_tokens
     details.total_tokens += total_tokens
 
 

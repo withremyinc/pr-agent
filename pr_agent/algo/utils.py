@@ -1891,6 +1891,10 @@ def show_run_details(gfm_supported: bool) -> str:
                   (details.total_tokens, "total")]
         reported = [f"{value:,} {label}" for value, label in counts if value]
         lines.append(f"- Tokens: {' / '.join(reported)}")
+        if details.reasoning_tokens:
+            lines.append(
+                f"- Reasoning tokens: {details.reasoning_tokens:,} (included in output tokens)"
+            )
     lines.append(f"- Time cost: {details.duration_seconds:.1f}s")
     if details.num_ai_calls:
         lines.append(f"- AI calls: {details.num_ai_calls}")

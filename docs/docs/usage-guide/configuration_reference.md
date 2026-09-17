@@ -322,9 +322,24 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `publish_as_check_run` | false | when true, publish review/description/improve output as GitHub Checks instead of PR comments |
 
 
+## `[github_review_cycle]`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `comment_author` | "github-actions[bot]" |  |
+| `approver` | "" | required only in approve mode |
+| `review_workflow` | "" | required only in approve mode |
+| `max_rechecks` | 30 |  |
+| `recheck_max_tokens` | 48000 |  |
+| `recheck_instructions` | """Recheck one previous code review finding against the complete current file supplied as JSON. ...""" |  |
+
+
 ## `[github_action_config]`
 
-_This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
+| Key | Default | Description |
+| --- | --- | --- |
+| `review_cycle_mode` | "disabled" | opt in: "review" or "approve"; GitHub Actions only |
+
 
 ## `[github_app]`
 
