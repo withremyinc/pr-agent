@@ -2,11 +2,11 @@
 
 import asyncio
 import copy
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-import yaml
 from starlette_context import request_cycle_context
 
 import pr_agent.tools.pr_code_suggestions as module
@@ -67,7 +67,7 @@ def make_tool(monkeypatch, failures):
             "existing_code": "old()", "improved_code": "new()",
             "relevant_lines_start": 1, "relevant_lines_end": 1,
         }
-        return yaml.safe_dump({"code_suggestions": [suggestion]}), "stop"
+        return json.dumps({"code_suggestions": [suggestion]}), "stop"
 
     async def reflect(*args):
         return ""
@@ -234,16 +234,43 @@ async def test_empty_prediction_is_a_success_not_a_retry_trigger(configured, mon
     assert len(calls) == 4
 
 
-async def test_invalid_yaml_recovery_preserves_parse_failure_notice(configured, monkeypatch):
+async def test_invalid_json_recovery_advances_to_the_next_fallback(configured, monkeypatch):
     tool, calls = make_tool(monkeypatch, {
         ("gpt-4o", "b"): TimeoutError("failure"),
-        ("gpt-4o-mini", "b"): "not a suggestions mapping",
+        ("gpt-4o-mini", "b"): "not a suggestions object",
     })
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
-    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "c.py"]
-    assert tool.failed_chunk_count == 1
-    assert tool.parse_failure_count == 1
-    assert len(calls) == 4
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+    assert tool.failed_chunk_count == 0
+    assert tool.parse_failure_count == 0
+    assert len(calls) == 6
+
+
+async def test_invalid_json_is_retried_on_the_same_model(configured, monkeypatch):
+    attempts = 0
+
+    def malformed_once():
+        nonlocal attempts
+        attempts += 1
+        return None
+
+    tool, calls = make_tool(monkeypatch, {})
+    completion = tool.ai_handler.chat_completion
+
+    async def retrying_completion(*, model, system, user, **kwargs):
+        if user == "b" and attempts == 0:
+            malformed_once()
+            calls.append((model, user, get_settings().get("openai.deployment_id"), system))
+            return "not JSON", "stop"
+        return await completion(model=model, system=system, user=user, **kwargs)
+
+    tool.ai_handler.chat_completion = retrying_completion
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
+
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+    assert [chunk for model, chunk, _, _ in calls if model == "gpt-4o"].count("b") == 2
+    assert tool.failed_chunk_count == 0
+    assert tool.parse_failure_count == 0
 
 
 @pytest.mark.parametrize("parent_cancel", [True, False])
@@ -428,7 +455,7 @@ async def test_recovery_uses_existing_reflection_before_publishing_results(confi
             if system != "Reflect":
                 return await generation(model=model, system=system, user=user, **kwargs)
             reflections.append((model, user, get_settings().get("openai.deployment_id")))
-            return yaml.safe_dump({"code_suggestions": [{"suggestion_score": 9, "why": "Verified"}]}), "stop"
+            return json.dumps({"code_suggestions": [{"suggestion_score": 9, "why": "Verified"}]}), "stop"
 
         tool.ai_handler.chat_completion = completion
         result = await retry_with_fallback_models(tool.prepare_prediction_main)

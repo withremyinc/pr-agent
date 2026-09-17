@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import difflib
+import json
 import math
 import re
 import textwrap
@@ -50,6 +51,32 @@ from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 from pr_agent.tools.progress_comment import build_progress_comment
+
+
+class CodeSuggestionsParseError(ValueError):
+    """The model did not return the requested code-suggestions JSON object."""
+
+
+def _load_json_response(response: str) -> dict | list:
+    text = response.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?```", text, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        text = fenced.group(1).strip()
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise CodeSuggestionsParseError("Failed to parse code suggestions JSON") from error
+
+
+def _load_structured_response(response: str) -> dict | list:
+    try:
+        return _load_json_response(response)
+    except CodeSuggestionsParseError as json_error:
+        legacy = load_yaml(response)
+        if isinstance(legacy, (dict, list)) and legacy:
+            get_logger().warning("Accepted legacy YAML from a code-suggestions response")
+            return legacy
+        raise json_error
 
 
 def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
@@ -848,14 +875,23 @@ class PRCodeSuggestions:
 
     async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str) -> dict:
         system_prompt, user_prompt = self._render_prediction_prompts(patches_diff, patches_diff_no_line_number)
-        response, finish_reason = await self.ai_handler.chat_completion(
-            model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
-        if not get_settings().config.publish_output:
-            get_settings().system_prompt = system_prompt
-            get_settings().user_prompt = user_prompt
-
-        # load suggestions from the AI response
-        data = self._prepare_pr_code_suggestions(response)
+        data = None
+        for parse_attempt in range(2):
+            response, finish_reason = await self.ai_handler.chat_completion(
+                model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+            if not get_settings().config.publish_output:
+                get_settings().system_prompt = system_prompt
+                get_settings().user_prompt = user_prompt
+            try:
+                data = self._prepare_pr_code_suggestions(response)
+                break
+            except CodeSuggestionsParseError:
+                if parse_attempt == 0:
+                    get_logger().warning("Retrying code suggestions after invalid JSON output")
+                    continue
+                raise
+        if data is None:
+            raise CodeSuggestionsParseError("No code suggestions JSON was produced")
 
         # self-reflect on suggestions (mandatory, since line numbers are generated now here)
         response_reflect = await self._self_reflect_with_fallback(data["code_suggestions"], patches_diff, model)
@@ -905,13 +941,19 @@ class PRCodeSuggestions:
         return ""
 
     async def analyze_self_reflection_response(self, data, response_reflect):
-        response_reflect_yaml = load_yaml(response_reflect)
-        if not isinstance(response_reflect_yaml, dict):
+        try:
+            response_reflect_json = _load_structured_response(response_reflect)
+        except CodeSuggestionsParseError:
             get_logger().warning(
-                "Self-reflection feedback was not a mapping; line anchors will not be resolved"
+                "Self-reflection feedback was not valid JSON; line anchors will not be resolved"
             )
             return
-        code_suggestions_feedback = response_reflect_yaml.get("code_suggestions", [])
+        if not isinstance(response_reflect_json, dict):
+            get_logger().warning(
+                "Self-reflection feedback was not an object; line anchors will not be resolved"
+            )
+            return
+        code_suggestions_feedback = response_reflect_json.get("code_suggestions", [])
         if not isinstance(code_suggestions_feedback, list):
             get_logger().warning(
                 "Self-reflection feedback 'code_suggestions' was not a list; "
@@ -1064,21 +1106,17 @@ class PRCodeSuggestions:
         return True
 
     def _prepare_pr_code_suggestions(self, predictions: str) -> Dict:
-        data = load_yaml(predictions.strip(),
-                         keys_fix_yaml=["relevant_file", "suggestion_content", "existing_code", "improved_code"],
-                         first_key="code_suggestions", last_key="label")
+        data = _load_structured_response(predictions)
         if isinstance(data, list):
             data = {'code_suggestions': data}
         if not isinstance(data, dict) or not isinstance(data.get("code_suggestions"), list):
-            get_logger().error("Failed to parse code suggestions from the AI prediction",
-                               artifact={"predictions": predictions})
-            self.parse_failure_count = getattr(self, "parse_failure_count", 0) + 1
-            return {"code_suggestions": []}
+            raise CodeSuggestionsParseError("Code suggestions JSON must contain a code_suggestions array")
 
         # remove or edit invalid suggestions
+        raw_suggestions = data['code_suggestions']
         suggestion_list = []
         one_sentence_summary_list = []
-        for i, suggestion in enumerate(data['code_suggestions']):
+        for i, suggestion in enumerate(raw_suggestions):
             try:
                 needed_keys = ['one_sentence_summary', 'label', 'relevant_file']
                 is_valid_keys = True
@@ -1115,6 +1153,10 @@ class PRCodeSuggestions:
                         f"Skipping suggestion {i + 1}, because it does not contain 'existing_code' or 'improved_code': {suggestion}")
             except Exception as e:
                 get_logger().error(f"Error processing suggestion {i + 1}: {suggestion}, error: {e}")
+        if raw_suggestions and not suggestion_list:
+            raise CodeSuggestionsParseError(
+                "Code suggestions JSON contained no complete suggestion objects"
+            )
         data['code_suggestions'] = suggestion_list
 
         return data
@@ -1809,7 +1851,10 @@ class PRCodeSuggestions:
                 else:
                     prediction_list.append(prediction)
 
-            self.failed_chunk_count = len(chunk_errors) + self.parse_failure_count
+            self.failed_chunk_count = len(chunk_errors)
+            self.parse_failure_count = sum(
+                isinstance(error, CodeSuggestionsParseError) for error in chunk_errors
+            )
             if chunk_errors and not prediction_list:
                 raise chunk_errors[0]
             self.prediction_list = prediction_list

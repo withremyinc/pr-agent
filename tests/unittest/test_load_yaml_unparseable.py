@@ -37,13 +37,24 @@ def test_reviewer_reports_the_parse_failure_instead_of_crashing():
     assert reviewer._prepare_pr_review() == ""
 
 
-def test_code_suggestions_returns_an_empty_list_instead_of_crashing():
-    """Guard pr_code_suggestions, which subscripts the parsed result."""
-    from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+def test_code_suggestions_rejects_invalid_json_for_retry():
+    """A malformed chunk must raise so the chunk retry path can recover it."""
+    from pr_agent.tools.pr_code_suggestions import CodeSuggestionsParseError, PRCodeSuggestions
 
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
 
-    assert tool._prepare_pr_code_suggestions(UNPARSEABLE) == {"code_suggestions": []}
+    with pytest.raises(CodeSuggestionsParseError):
+        tool._prepare_pr_code_suggestions(UNPARSEABLE)
+
+
+def test_code_suggestions_accepts_plain_and_fenced_json():
+    from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    expected = {"code_suggestions": []}
+
+    assert tool._prepare_pr_code_suggestions('{"code_suggestions": []}') == expected
+    assert tool._prepare_pr_code_suggestions('```json\n{"code_suggestions": []}\n```') == expected
 
 
 def test_generate_labels_membership_check_does_not_raise():
@@ -58,26 +69,19 @@ def test_generate_labels_membership_check_does_not_raise():
     assert "labels" not in tool.data
 
 
-@pytest.mark.parametrize("payload", ["code_suggestions:\n", "code_suggestions: 5\n",
-                                     "code_suggestions:\n  a: 1\n"])
-def test_a_non_list_code_suggestions_value_is_rejected(payload):
-    """Return an empty result when code_suggestions is present but not a list."""
-    from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{}',
+        '{"code_suggestions": 5}',
+        '{"code_suggestions": {"a": 1}}',
+        '{"code_suggestions": [{}]}',
+    ],
+)
+def test_an_invalid_code_suggestions_value_is_rejected(payload):
+    from pr_agent.tools.pr_code_suggestions import CodeSuggestionsParseError, PRCodeSuggestions
 
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
 
-    assert tool._prepare_pr_code_suggestions(payload) == {"code_suggestions": []}
-
-
-def test_an_unparseable_chunk_is_recorded_so_the_coverage_footer_still_reports_it():
-    """The empty result must not read as a successful chunk (#2867 counts failed chunks)."""
-    from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-
-    assert tool._prepare_pr_code_suggestions(UNPARSEABLE) == {"code_suggestions": []}
-    assert tool.parse_failure_count == 1
-
-    tool.failed_chunk_count = tool.parse_failure_count
-    tool.total_chunk_count = 2
-    assert "1 of 2 analysis chunks failed" in tool._get_suggestions_coverage_footer()
+    with pytest.raises(CodeSuggestionsParseError):
+        tool._prepare_pr_code_suggestions(payload)
