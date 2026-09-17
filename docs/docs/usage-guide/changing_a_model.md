@@ -628,7 +628,7 @@ for the [Auto](https://openrouter.ai/docs/guides/routing/routers/auto-router),
 
 #### Openrouter provider routing, reasoning and output cap
 
-For `openrouter/...` models you can optionally restrict which upstream providers Openrouter uses, control reasoning, and cap the completion length. All keys live in the `[openrouter]` section of `configuration.toml`. Models listed in [`SUPPORT_REASONING_EFFORT_MODELS`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py) inherit `config.reasoning_effort` unless an Openrouter-specific effort or token budget is set.
+For `openrouter/...` models you can optionally restrict which upstream providers Openrouter uses, control reasoning, and cap the completion length. All keys live in the `[openrouter]` section of `configuration.toml`. Models listed in [`SUPPORT_REASONING_EFFORT_MODELS`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), plus Gemini models that LiteLLM reports as reasoning-capable, inherit `config.reasoning_effort` unless an OpenRouter-specific effort or token budget is set.
 
 ```toml
 [openrouter]

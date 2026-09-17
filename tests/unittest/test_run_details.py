@@ -1,5 +1,6 @@
 import asyncio
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,6 +31,7 @@ def test_init_returns_fresh_instance_with_zeroed_counters():
     assert details.fallback_used is False
     assert details.prompt_tokens == 0
     assert details.completion_tokens == 0
+    assert details.reasoning_tokens == 0
     assert details.total_tokens == 0
     assert details.num_ai_calls == 0
     assert details.total_cost_usd == Decimal("0")
@@ -95,6 +97,25 @@ def test_add_token_usage_derives_total_when_missing():
     add_token_usage({"prompt_tokens": 20, "completion_tokens": 5})
 
     assert get_run_details().total_tokens == 25
+
+
+def test_add_token_usage_accumulates_reasoning_from_dicts_and_objects():
+    init_run_details()
+    object_usage = _Usage(10, 8, 18)
+    object_usage.completion_tokens_details = SimpleNamespace(reasoning_tokens=7)
+
+    add_token_usage(object_usage)
+    add_token_usage({
+        "prompt_tokens": 5,
+        "completion_tokens": 4,
+        "total_tokens": 9,
+        "completion_tokens_details": {"reasoning_tokens": 3},
+    })
+
+    details = get_run_details()
+    assert details.reasoning_tokens == 10
+    assert details.completion_tokens == 12
+    assert details.total_tokens == 27
 
 
 def test_add_token_usage_ignores_none_and_partial_objects():

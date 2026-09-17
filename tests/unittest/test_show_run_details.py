@@ -40,6 +40,22 @@ def test_renders_all_fields_in_a_details_block_when_gfm_supported():
     assert "AI calls: 1" in output
 
 
+def test_renders_reasoning_tokens_as_part_of_completion_usage():
+    init_run_details()
+    record_model_used("gemini/gemini-3.8-flash", is_fallback=False)
+    record_ai_call({
+        "prompt_tokens": 5328,
+        "completion_tokens": 2988,
+        "total_tokens": 8316,
+        "completion_tokens_details": {"reasoning_tokens": 2933},
+    })
+
+    output = show_run_details(gfm_supported=True)
+
+    assert "Tokens: 5,328 in / 2,988 out / 8,316 total" in output
+    assert "Reasoning tokens: 2,933 (included in output tokens)" in output
+
+
 def test_marks_fallback_model():
     init_run_details()
     record_model_used("openai/gpt-5.4", is_fallback=True)

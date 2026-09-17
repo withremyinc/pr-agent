@@ -3383,6 +3383,36 @@ class LiteLLMAIHandler(BaseAiHandler):
             return "xhigh" if "xhigh" in grok_levels else "high"
         return "low"
 
+    def _supports_reasoning_effort(self, model: str, custom_llm_provider: str | None = None) -> bool:
+        """Return whether the configured transport accepts ``reasoning_effort``.
+
+        Keep the explicit registry for providers whose LiteLLM capability data is
+        incomplete. For newly released Gemini models, prefer LiteLLM's pinned
+        capability metadata so reasoning is not silently disabled until this
+        project updates another model-name allowlist. Other model families retain
+        their dedicated GPT, Grok, and Claude thinking paths.
+        """
+        normalized_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
+        if any(
+            normalized_model == supported or normalized_model.endswith("/" + supported)
+            for supported in self.support_reasoning_models
+        ):
+            return True
+        bare_model = normalized_model.rsplit("/", 1)[-1]
+        if not bare_model.startswith("gemini-"):
+            return False
+        try:
+            supported_params = litellm.get_supported_openai_params(
+                model=normalized_model,
+                custom_llm_provider=custom_llm_provider or None,
+            ) or []
+        except Exception as exc:
+            get_logger().debug(
+                f"Could not detect reasoning_effort support for {model}: {exc}"
+            )
+            return False
+        return "reasoning_effort" in supported_params
+
     def _resolve_reasoning_effort(self, model: str, configured_effort) -> str:
         """Validate and normalize a configured reasoning effort for this model."""
         try:
@@ -4006,16 +4036,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs.pop('temperature', None)
 
                 reasoning_model = openrouter_model.rsplit(":", 1)[0] if openrouter_model else model
-                # Add reasoning_effort if model supports it. Match the bare model
-                # id as well as any provider-prefixed form (e.g.
-                # "openrouter/google/gemini-2.5-pro", "gemini/gemini-2.5-pro"), so a
-                # configured reasoning_effort is not silently dropped for models the
-                # user references with a provider prefix. OpenRouter routing variants
-                # such as :nitro and :floor are stripped only for this membership test.
-                if any(
-                    reasoning_model == m or reasoning_model.endswith("/" + m)
-                    for m in self.support_reasoning_models
-                ):
+                # Prefer LiteLLM's provider capability metadata for newly released
+                # Gemini models. The explicit registry remains as a fallback for
+                # incomplete provider metadata and OpenRouter reasoning routes.
+                if self._supports_reasoning_effort(reasoning_model, custom_llm_provider):
                     config_effort = self._default_reasoning_effort
                     reasoning_effort = self._resolve_reasoning_effort(openrouter_model or model, config_effort)
 

@@ -985,12 +985,11 @@ class TestLiteLLMReasoningEffortGPT6:
 
 
 class TestLiteLLMReasoningEffortGemini:
-    """Gemini 2.5 reasoning_effort handling via the SUPPORT_REASONING_EFFORT_MODELS path.
+    """Gemini reasoning effort through explicit and LiteLLM capability detection.
 
-    Gemini 2.5 exposes a thinking budget that LiteLLM maps from reasoning_effort. The
-    membership test in chat_completion matches bare and provider-prefixed ids such as
-    "vertex_ai/gemini-2.5-pro". OpenRouter models use extra_body.reasoning instead and
-    are covered by test_litellm_openrouter_controls.py.
+    Gemini 2.5 uses the compatibility registry, while newer Gemini models use the
+    pinned LiteLLM capability metadata. OpenRouter models use extra_body.reasoning
+    instead and are covered by test_litellm_openrouter_controls.py.
     """
 
     def _isolate_env(self, monkeypatch):
@@ -1001,8 +1000,8 @@ class TestLiteLLMReasoningEffortGemini:
 
     @pytest.mark.asyncio
     async def test_gemini_prefixed_forms_get_reasoning_effort(self, monkeypatch, mock_logger):
-        """Bare and provider-prefixed Gemini 2.5 ids all receive the configured reasoning_effort."""
-        fake_settings = create_mock_settings("low")
+        """Bare and provider-prefixed Gemini ids receive the configured reasoning effort."""
+        fake_settings = create_mock_settings("high")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
         self._isolate_env(monkeypatch)
 
@@ -1011,6 +1010,9 @@ class TestLiteLLMReasoningEffortGemini:
             "gemini-2.5-flash",
             "gemini/gemini-2.5-pro",
             "vertex_ai/gemini-2.5-pro",
+            "gemini-3.8-flash",
+            "gemini/gemini-3.8-flash",
+            "vertex_ai/gemini-3.8-flash",
         ]
 
         for model in gemini_models:
@@ -1021,9 +1023,21 @@ class TestLiteLLMReasoningEffortGemini:
                 await handler.chat_completion(model=model, system="test system", user="test user")
 
                 call_kwargs = mock_completion.call_args[1]
-                assert call_kwargs["reasoning_effort"] == "low", f"failed for {model}"
+                assert call_kwargs["reasoning_effort"] == "high", f"failed for {model}"
                 # Gemini keeps temperature (it supports it) — unlike the GPT-5 path.
                 assert call_kwargs["model"] == model, f"model mutated for {model}: {call_kwargs['model']}"
+
+    def test_pinned_litellm_reports_gemini_3_8_reasoning_support(self):
+        """Catch a dependency change that would silently disable explicit thinking levels."""
+        for model, provider in (
+            ("gemini/gemini-3.8-flash", "gemini"),
+            ("vertex_ai/gemini-3.8-flash", "vertex_ai"),
+        ):
+            supported = litellm.get_supported_openai_params(
+                model=model,
+                custom_llm_provider=provider,
+            ) or []
+            assert "reasoning_effort" in supported, f"reasoning_effort unavailable for {model}"
 
     @pytest.mark.asyncio
     async def test_non_listed_gemini_gets_no_reasoning_effort(self, monkeypatch, mock_logger):

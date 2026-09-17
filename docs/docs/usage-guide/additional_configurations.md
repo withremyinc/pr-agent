@@ -44,6 +44,7 @@ On providers that support GitHub-Flavored Markdown this appends a collapsible se
 ⚙️ Agent run details
 - Model: provider/fallback-model (fallback)
 - Tokens: 12,340 in / 1,205 out / 13,545 total
+- Reasoning tokens: 1,000 (included in output tokens)
 - Time cost: 8.2s
 - AI calls: 1
 - Estimated API cost: $0.08 USD
@@ -51,7 +52,7 @@ On providers that support GitHub-Flavored Markdown this appends a collapsible se
   - anthropic/claude-sonnet-5: $0.01 USD
 ```
 
-`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
+`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. Providers that expose reasoning usage add a separate `Reasoning tokens` line; those tokens are already included in the output and total counts. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
 
 `Estimated API cost` is derived synchronously from each completed LiteLLM response and its finalized usage. LiteLLM can account for cache reads, cache writes, reasoning tokens, and provider-specific usage categories when the response and its pricing data include them. Multi-model runs show a compact breakdown of the known costs. Exact `Decimal` values are retained for aggregation, while public currency output is rounded to two decimal places; a tiny positive value that would round to zero is shown as `<$0.01` instead of `$0.00`. If only some successful calls can be priced, the total is marked `partial` with the priced-call count; if none can be priced, the line reports `unavailable`. Missing pricing is never rendered as `$0`.
 
