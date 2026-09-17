@@ -300,6 +300,7 @@ async def analyze(pr_url):
         "suggestions_omitted_files": suggestions.remaining_files_list,
         "failed_review_chunks": reviewer.review_failed_chunk_count,
         "failed_suggestion_chunks": suggestions.failed_chunk_count,
+        "suggestion_parse_failures": suggestions.parse_failure_count,
         "security_concerns": data["review"].get("security_concerns"),
     })
     return publishable, complete, details

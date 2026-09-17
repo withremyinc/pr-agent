@@ -1,4 +1,5 @@
 import copy
+import json
 from dataclasses import replace
 from unittest.mock import AsyncMock, Mock
 
@@ -415,7 +416,9 @@ async def test_analysis_completeness_uses_both_passes_and_limits(monkeypatch, de
     _, complete, details = await REAL_ANALYZE("https://github.com/org/repo/pull/7")
     assert complete == (defect is None)
     assert cycle.get_settings().config.publish_output == previous
-    assert "security_concerns" in details
+    parsed_details = json.loads(details)
+    assert "security_concerns" in parsed_details
+    assert parsed_details["suggestion_parse_failures"] == (1 if defect == "parse" else 0)
 
 
 @pytest.mark.parametrize("blocked_by", ["workflow", "artifact", "identity"])

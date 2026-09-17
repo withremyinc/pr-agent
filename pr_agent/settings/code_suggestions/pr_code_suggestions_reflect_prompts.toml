@@ -46,7 +46,7 @@ The PR code diff will be presented in the following structured format:
 {{ diff_hunk_format }}
 
 
-The output must be a YAML object equivalent to type $PRCodeSuggestionsFeedback, according to the following Pydantic definitions:
+The output must be a JSON object equivalent to type $PRCodeSuggestionsFeedback, according to the following Pydantic definitions:
 =====
 class CodeSuggestionFeedback(BaseModel):
     suggestion_summary: str = Field(description="Repeated from the input")
@@ -62,21 +62,22 @@ class PRCodeSuggestionsFeedback(BaseModel):
 
 
 Example output:
-```yaml
-code_suggestions:
-- suggestion_summary: |
-    Use a more descriptive variable name here
-  relevant_file: "src/file1.py"
-  relevant_lines_start: 13
-  relevant_lines_end: 14
-  suggestion_score: 6
-  why: |
-    The variable name 't' is not descriptive enough
-- ...
+```json
+{
+  "code_suggestions": [
+    {
+      "suggestion_summary": "Use a more descriptive variable name here",
+      "relevant_file": "src/file1.py",
+      "relevant_lines_start": 13,
+      "relevant_lines_end": 14,
+      "suggestion_score": 6,
+      "why": "The variable name `t` is not descriptive enough"
+    }
+  ]
+}
 ```
 
-
-Each YAML output MUST be after a newline, indented, with block scalar indicator ('|').
+Return exactly one valid JSON object. Do not use Markdown fences or add text outside the JSON object.
 """
 
 user="""You are given a Pull Request (PR) code diff:
@@ -95,21 +96,22 @@ Below are {{ num_code_suggestions }} AI-generated code suggestions for the Pull 
 
 
 Example output:
-```yaml
-code_suggestions:
-- suggestion_summary: |
-    ...
-  relevant_file: "..."
-  relevant_lines_start: ...
-  relevant_lines_end: ...
-  suggestion_score: ...
-  why: |
-    ...
-- ...
+```json
+{
+  "code_suggestions": [
+    {
+      "suggestion_summary": "...",
+      "relevant_file": "...",
+      "relevant_lines_start": 1,
+      "relevant_lines_end": 1,
+      "suggestion_score": 1,
+      "why": "..."
+    }
+  ]
+}
 ```
 (replace '...' with actual content)
 {%- endif %}
 
-Response (should be a valid YAML, and nothing else):
-```yaml
+Response (must be one valid JSON object, and nothing else):
 """
