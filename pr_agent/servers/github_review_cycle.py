@@ -6,7 +6,7 @@ import io
 import json
 import os
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import requests
@@ -365,6 +365,16 @@ async def review_cycle(github, number, expected_head=None):
                 except requests.HTTPError as error:
                     if error.response.status_code != 422:
                         raise
+                    # GitHub rejects some valid multi-line ranges when context
+                    # lines cross an internal diff boundary. Keep the finding
+                    # inline by retrying its final line before declaring a gap.
+                    if finding.start < finding.end:
+                        try:
+                            github.publish(number, head, replace(finding, start=finding.end))
+                            continue
+                        except requests.HTTPError as retry_error:
+                            if retry_error.response.status_code != 422:
+                                raise
                     complete = False
                     details += f"\nGitHub rejected the inline finding at {finding.path}:{finding.start}-{finding.end}."
         published = {marker(thread.body) for thread in github.threads(number) if not thread.resolved}
