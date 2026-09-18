@@ -74,6 +74,21 @@ def marker(body):
     return legacy.group(0) if legacy else None
 
 
+def inline_range_error(error):
+    response = error.response
+    if response is None or response.status_code != 422:
+        return False
+    try:
+        detail = json.dumps(response.json()).lower()
+    except (requests.JSONDecodeError, ValueError):
+        return False
+    return any(message in detail for message in (
+        "must be part of the diff",
+        "diff hunk can't be blank",
+        "diff_hunk can't be blank",
+    ))
+
+
 def eligible(pr, repository):
     return (pr["state"] == "open" and not pr["draft"]
             and pr["head"]["repo"] is not None
@@ -368,7 +383,7 @@ async def review_cycle(github, number, expected_head=None):
                     # GitHub rejects some valid multi-line ranges when context
                     # lines cross an internal diff boundary. Keep the finding
                     # inline by retrying its final line before declaring a gap.
-                    if finding.start < finding.end:
+                    if finding.start < finding.end and inline_range_error(error):
                         try:
                             github.publish(number, head, replace(finding, start=finding.end))
                             continue
