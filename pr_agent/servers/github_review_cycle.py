@@ -205,9 +205,9 @@ class GitHub:
             "external_id": f"qodo-cycle-v1:{os.environ['GITHUB_RUN_ID']}:{os.environ['GITHUB_RUN_ATTEMPT']}",
         })["id"]
 
-    def finish_check(self, check_id, receipt, reason):
+    def finish_check(self, check_id, receipt, reason, conclusion):
         self.request("PATCH", self.repo(f"check-runs/{check_id}"), json={
-            "status": "completed", "conclusion": "success" if receipt.complete else "failure",
+            "status": "completed", "conclusion": conclusion,
             "output": {"title": "Review complete" if receipt.complete else "Review incomplete",
                        "summary": receipt.model_dump_json(), "text": reason[:60000]},
         })
@@ -362,6 +362,10 @@ async def review_cycle(github, number, expected_head=None):
                       attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]), complete=False)
     check_id = github.start_check(head)
     reason = "Review did not complete"
+    # A run that raises is a failure. A run that finishes without covering
+    # the whole PR is neutral: it withholds approval (the receipt says so) but
+    # is not an error a merge queue should block on.
+    conclusion = "failure"
     try:
         before = github.threads(number)
         findings, complete, details = await analyze(pr["html_url"])
@@ -421,8 +425,9 @@ async def review_cycle(github, number, expected_head=None):
         reason = ("All findings published. Unresolved threads block approval."
                   if complete else "Coverage, parsing, a finding limit, or security concerns require another review.")
         reason += "\n\n" + details
+        conclusion = "success" if complete else "neutral"
     finally:
-        github.finish_check(check_id, receipt, reason)
+        github.finish_check(check_id, receipt, reason, conclusion)
     return receipt
 
 

@@ -53,9 +53,9 @@ class FakeGitHub:
                             "external_id": "qodo-cycle-v1:123:1", "output": {}})
         return id_
 
-    def finish_check(self, check_id, receipt, reason):
+    def finish_check(self, check_id, receipt, reason, conclusion):
         self.checks[check_id - 1].update(
-            status="completed", conclusion="success" if receipt.complete else "failure",
+            status="completed", conclusion=conclusion,
             output={"summary": receipt.model_dump_json(), "text": reason})
 
     def publish(self, number, head, finding):
@@ -179,6 +179,9 @@ async def test_incomplete_review_cannot_resolve_or_approve_even_after_manual_res
     monkeypatch.setattr(cycle, "recheck", AsyncMock(return_value=cycle.Recheck(verdict="fixed", reason="Fixed")))
     await cycle.review_cycle(github, 7)
     assert not github.resolutions
+    # Incomplete coverage is neutral, not a failure: it withholds approval
+    # without reading as a broken run to a merge queue.
+    assert github.checks[-1]["conclusion"] == "neutral"
     github.resolve(github.current_threads[0], True)
     assert not cycle.approve_if_ready(github, 7)
 
