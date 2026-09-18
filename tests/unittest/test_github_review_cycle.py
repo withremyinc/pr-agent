@@ -338,6 +338,21 @@ async def test_missing_file_is_uncertain_and_makes_no_model_call(monkeypatch):
 
 
 REAL_RECHECK = cycle.recheck
+
+
+@pytest.mark.parametrize("response", [
+    '{"verdict":"open","reason":"Still broken"}',
+    '```json\n{"verdict":"open","reason":"Still broken"}\n```',
+    '```\n{"verdict": "open", "reason": "Still broken"}\n```',
+    '  ```JSON\n{"verdict":"open","reason":"Still broken"}\n```  ',
+])
+def test_parse_recheck_accepts_raw_and_fenced_json(response):
+    assert cycle.parse_recheck(response) == cycle.Recheck(verdict="open", reason="Still broken")
+
+
+def test_parse_recheck_rejects_prose_around_the_verdict():
+    with pytest.raises(ValueError):
+        cycle.parse_recheck('Here you go:\n```json\n{"verdict":"open","reason":"x"}\n```')
 REAL_ANALYZE = cycle.analyze
 
 

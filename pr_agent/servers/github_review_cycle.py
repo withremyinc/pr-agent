@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import zipfile
 from dataclasses import dataclass, replace
 from typing import Literal
@@ -331,7 +332,23 @@ async def recheck(github, thread, head):
         return Recheck(verdict="uncertain", reason="The complete file exceeds the recheck budget")
     response, _ = await LiteLLMAIHandler().chat_completion(
         model=get_settings().config.model, system=system, user=user, temperature=0.0)
-    return Recheck.model_validate_json(response)
+    return parse_recheck(response)
+
+
+RECHECK_FENCE_RE = re.compile(r"\A```(?:json)?[ \t]*\r?\n(.*?)\r?\n?```\Z", re.DOTALL | re.IGNORECASE)
+
+
+def parse_recheck(response: str) -> Recheck:
+    """Accept the verdict as raw JSON or wrapped in a Markdown code fence.
+
+    Models routinely fence JSON even when told not to; the fenced text is the
+    same verdict, so it must not fail the run.
+    """
+    text = response.strip()
+    fenced = RECHECK_FENCE_RE.match(text)
+    if fenced:
+        text = fenced.group(1).strip()
+    return Recheck.model_validate_json(text)
 
 
 async def review_cycle(github, number, expected_head=None):
