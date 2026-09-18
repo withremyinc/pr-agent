@@ -112,6 +112,40 @@ async def test_repeated_primary_fallback_retries_only_failed_chunks(configured, 
     assert tool.failed_chunk_count == 0
 
 
+async def test_same_model_retries_stay_sequential_when_parallel_calls_are_disabled(configured, monkeypatch):
+    get_settings().set("config.fallback_models", ["gpt-4o"])
+    get_settings().set("openai.fallback_deployments", [])
+    get_settings().set("pr_code_suggestions.parallel_calls", False)
+    attempts = {"b": 0, "c": 0}
+    active = 0
+    max_active = 0
+
+    def fail_once(chunk):
+        async def run():
+            nonlocal active, max_active
+            attempts[chunk] += 1
+            active += 1
+            max_active = max(max_active, active)
+            try:
+                await asyncio.sleep(0)
+                if attempts[chunk] == 1:
+                    raise TimeoutError("transient provider timeout")
+            finally:
+                active -= 1
+
+        return run
+
+    tool, _ = make_tool(monkeypatch, {
+        ("gpt-4o", "b"): fail_once("b"),
+        ("gpt-4o", "c"): fail_once("c"),
+    })
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
+
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+    assert attempts == {"b": 2, "c": 2}
+    assert max_active == 1
+
+
 async def test_recovery_exhaustion_keeps_successes_and_reports_remaining_gap(configured, monkeypatch):
     tool, calls = make_tool(monkeypatch, {
         ("gpt-4o", "b"): RuntimeError("primary failed"),

@@ -1699,13 +1699,25 @@ class PRCodeSuggestions:
             get_logger().info(
                 f"Retrying {len(failed_indices)} failed suggestion chunk(s) with {model}"
             )
-            retried = await asyncio.gather(
-                *[
-                    self._get_prediction(model, chunk_pairs[index][0], chunk_pairs[index][1])
-                    for index in failed_indices
-                ],
-                return_exceptions=True,
-            )
+            if get_settings().pr_code_suggestions.parallel_calls:
+                retried = await asyncio.gather(
+                    *[
+                        self._get_prediction(model, chunk_pairs[index][0], chunk_pairs[index][1])
+                        for index in failed_indices
+                    ],
+                    return_exceptions=True,
+                )
+            else:
+                retried = []
+                for index in failed_indices:
+                    try:
+                        retried.append(
+                            await self._get_prediction(
+                                model, chunk_pairs[index][0], chunk_pairs[index][1]
+                            )
+                        )
+                    except Exception as error:
+                        retried.append(error)
             for index, result in zip(failed_indices, retried, strict=True):
                 if isinstance(result, BaseException) and not isinstance(result, Exception):
                     raise result
