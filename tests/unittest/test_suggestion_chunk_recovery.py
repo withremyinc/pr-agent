@@ -93,6 +93,25 @@ async def test_recovery_restores_missing_results_without_replacing_successes(con
     assert get_settings().get("openai.deployment_id") == "primary"
 
 
+async def test_repeated_primary_fallback_retries_only_failed_chunks(configured, monkeypatch):
+    get_settings().set("config.fallback_models", ["gpt-4o"])
+    get_settings().set("openai.fallback_deployments", [])
+    attempts = 0
+
+    async def fail_once():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError("transient provider timeout")
+
+    tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): fail_once})
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
+
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+    assert [chunk for model, chunk, _, _ in calls if model == "gpt-4o"].count("b") == 2
+    assert tool.failed_chunk_count == 0
+
+
 async def test_recovery_exhaustion_keeps_successes_and_reports_remaining_gap(configured, monkeypatch):
     tool, calls = make_tool(monkeypatch, {
         ("gpt-4o", "b"): RuntimeError("primary failed"),

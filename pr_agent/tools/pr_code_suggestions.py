@@ -1689,6 +1689,27 @@ class PRCodeSuggestions:
         for result in results:
             if isinstance(result, BaseException) and not isinstance(result, Exception):
                 raise result
+
+        # A repeated primary in fallback_models is an explicit request for one
+        # same-model retry. Recover only failed chunks and keep successful
+        # siblings, rather than rerunning the entire large review.
+        fallback_models = list(get_settings().config.get("fallback_models", []))
+        failed_indices = [index for index, result in enumerate(results) if isinstance(result, Exception)]
+        if fallback_models == [model] and failed_indices:
+            get_logger().info(
+                f"Retrying {len(failed_indices)} failed suggestion chunk(s) with {model}"
+            )
+            retried = await asyncio.gather(
+                *[
+                    self._get_prediction(model, chunk_pairs[index][0], chunk_pairs[index][1])
+                    for index in failed_indices
+                ],
+                return_exceptions=True,
+            )
+            for index, result in zip(failed_indices, retried, strict=True):
+                if isinstance(result, BaseException) and not isinstance(result, Exception):
+                    raise result
+                results[index] = result
         return results
 
     def _recovery_chain(self, model: str, settings) -> Optional[tuple]:
