@@ -6,7 +6,7 @@ import io
 import json
 import os
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import requests
@@ -72,6 +72,21 @@ def marker(body):
                 return line
     legacy = BODY_MARKER_RE.search(body)
     return legacy.group(0) if legacy else None
+
+
+def inline_range_error(error):
+    response = error.response
+    if response is None or response.status_code != 422:
+        return False
+    try:
+        detail = json.dumps(response.json()).lower()
+    except (requests.JSONDecodeError, ValueError):
+        return False
+    return any(message in detail for message in (
+        "must be part of the diff",
+        "diff hunk can't be blank",
+        "diff_hunk can't be blank",
+    ))
 
 
 def eligible(pr, repository):
@@ -365,6 +380,16 @@ async def review_cycle(github, number, expected_head=None):
                 except requests.HTTPError as error:
                     if error.response.status_code != 422:
                         raise
+                    # GitHub rejects some valid multi-line ranges when context
+                    # lines cross an internal diff boundary. Keep the finding
+                    # inline by retrying its final line before declaring a gap.
+                    if finding.start < finding.end and inline_range_error(error):
+                        try:
+                            github.publish(number, head, replace(finding, start=finding.end))
+                            continue
+                        except requests.HTTPError as retry_error:
+                            if retry_error.response.status_code != 422:
+                                raise
                     complete = False
                     details += f"\nGitHub rejected the inline finding at {finding.path}:{finding.start}-{finding.end}."
         published = {marker(thread.body) for thread in github.threads(number) if not thread.resolved}

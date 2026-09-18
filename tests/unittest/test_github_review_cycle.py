@@ -454,9 +454,50 @@ async def test_analysis_exception_restores_publication_settings(monkeypatch):
     assert cycle.get_settings().config.publish_output == previous
 
 
-async def test_rejected_inline_finding_does_not_hide_later_findings(monkeypatch):
+async def test_rejected_multiline_finding_retries_on_its_final_line(monkeypatch):
     github = FakeGitHub()
-    bad = cycle.Finding("missing.ts", 900, 901, "Cannot anchor")
+    finding = cycle.Finding("src.ts", 1, 2, "Anchor at the final line")
+    monkeypatch.setattr(cycle, "analyze", AsyncMock(return_value=([finding], True, "complete")))
+    publish = github.publish
+
+    def reject_multiline(number, head, candidate):
+        if candidate.start < candidate.end:
+            response = cycle.requests.Response()
+            response.status_code = 422
+            response._content = b'{"message":"PullRequestReviewThread line must be part of the diff"}'
+            response.headers["Content-Type"] = "application/json"
+            raise cycle.requests.HTTPError(response=response)
+        publish(number, head, candidate)
+
+    github.publish = reject_multiline
+    receipt = await cycle.review_cycle(github, 7)
+    assert github.publications == [replace(finding, start=finding.end)]
+    assert receipt.complete
+
+
+async def test_unrelated_multiline_422_does_not_retry_another_location(monkeypatch):
+    github = FakeGitHub()
+    finding = cycle.Finding("src.ts", 1, 2, "Invalid request")
+    monkeypatch.setattr(cycle, "analyze", AsyncMock(return_value=([finding], True, "complete")))
+    attempts = []
+
+    def reject(number, head, candidate):
+        attempts.append(candidate)
+        response = cycle.requests.Response()
+        response.status_code = 422
+        response._content = b'{"message":"Validation Failed","errors":[{"message":"body is too long"}]}'
+        response.headers["Content-Type"] = "application/json"
+        raise cycle.requests.HTTPError(response=response)
+
+    github.publish = reject
+    receipt = await cycle.review_cycle(github, 7)
+    assert attempts == [finding]
+    assert not receipt.complete
+
+
+async def test_rejected_single_line_finding_does_not_hide_later_findings(monkeypatch):
+    github = FakeGitHub()
+    bad = cycle.Finding("missing.ts", 900, 900, "Cannot anchor")
     good = cycle.Finding("src.ts", 1, 1, "Publish this")
     monkeypatch.setattr(cycle, "analyze", AsyncMock(return_value=([bad, good], True, "complete")))
     publish = github.publish
@@ -472,7 +513,7 @@ async def test_rejected_inline_finding_does_not_hide_later_findings(monkeypatch)
     receipt = await cycle.review_cycle(github, 7)
     assert github.publications == [good]
     assert not receipt.complete
-    assert "missing.ts:900-901" in github.checks[-1]["output"]["text"]
+    assert "missing.ts:900-900" in github.checks[-1]["output"]["text"]
     assert not cycle.approve_if_ready(github, 7)
 
 
