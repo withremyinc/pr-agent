@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import zipfile
 from dataclasses import dataclass, replace
 from typing import Literal
@@ -204,9 +205,9 @@ class GitHub:
             "external_id": f"qodo-cycle-v1:{os.environ['GITHUB_RUN_ID']}:{os.environ['GITHUB_RUN_ATTEMPT']}",
         })["id"]
 
-    def finish_check(self, check_id, receipt, reason):
+    def finish_check(self, check_id, receipt, reason, conclusion):
         self.request("PATCH", self.repo(f"check-runs/{check_id}"), json={
-            "status": "completed", "conclusion": "success" if receipt.complete else "failure",
+            "status": "completed", "conclusion": conclusion,
             "output": {"title": "Review complete" if receipt.complete else "Review incomplete",
                        "summary": receipt.model_dump_json(), "text": reason[:60000]},
         })
@@ -276,29 +277,35 @@ async def analyze(pr_url):
         settings.set("config.publish_output", publish)
         settings.set("config.propagate_tool_errors", propagate)
 
-    findings = []
+    # Each candidate is (file, start, end, body). Suggestion metadata is model output that can arrive
+    # without a usable range (e.g. when self-reflection returns malformed JSON), so nothing is trusted
+    # until the range check below has normalized it.
+    candidates = []
     for issue in data["review"]["key_issues_to_review"]:
-        findings.append(Finding(issue["relevant_file"].strip(), int(issue["start_line"]), int(issue["end_line"]),
-                                f"**Qodo review: {issue['issue_header'].strip()}**\n\n{issue['issue_content'].strip()}"))
+        candidates.append((issue["relevant_file"], issue["start_line"], issue["end_line"],
+                           f"**Qodo review: {issue['issue_header'].strip()}**\n\n{issue['issue_content'].strip()}"))
     for suggestion in suggestions.data["code_suggestions"]:
         # Plain review comments, not automatically applicable patches. The original code and proposed
         # replacement remain available to the reviewer without offering unvalidated edits to GitHub.
-        body = f"**Qodo suggestion**\n\n{suggestion['suggestion_content'].strip()}"
-        if suggestion.get("improved_code"):
-            body += "\n\nProposed code:\n````\n" + suggestion["improved_code"].strip() + "\n````"
-        findings.append(Finding(suggestion["relevant_file"].strip(), int(suggestion["relevant_lines_start"]),
-                                int(suggestion["relevant_lines_end"]), body))
+        content = suggestion.get("suggestion_content")
+        body = f"**Qodo suggestion**\n\n{content.strip()}" if isinstance(content, str) and content.strip() else None
+        improved = suggestion.get("improved_code")
+        if body and isinstance(improved, str) and improved.strip():
+            body += "\n\nProposed code:\n````\n" + improved.strip() + "\n````"
+        candidates.append((suggestion.get("relevant_file"), suggestion.get("relevant_lines_start"),
+                           suggestion.get("relevant_lines_end"), body))
 
     unanchorable = []
     publishable = []
-    for finding in findings:
-        if suggestions._is_suggestion_line_range_valid({
-            "relevant_file": finding.path, "relevant_lines_start": finding.start,
-            "relevant_lines_end": finding.end,
-        }):
-            publishable.append(finding)
+    for path, start, end, body in candidates:
+        location = {"relevant_file": path.strip() if isinstance(path, str) else path,
+                    "relevant_lines_start": start, "relevant_lines_end": end}
+        # An unpublishable finding is a coverage gap, never a crash and never a silent drop.
+        if body and suggestions._is_suggestion_line_range_valid(location):
+            publishable.append(Finding(location["relevant_file"], location["relevant_lines_start"],
+                                       location["relevant_lines_end"], body))
         else:
-            unanchorable.append(f"{finding.path}:{finding.start}-{finding.end}")
+            unanchorable.append(f"{location['relevant_file']}:{start}-{end}")
 
     complete = (not unanchorable and not reviewer.remaining_files_list and not reviewer.review_failed_chunk_count
                 and not suggestions.remaining_files_list and not suggestions.failed_chunk_count
@@ -331,7 +338,23 @@ async def recheck(github, thread, head):
         return Recheck(verdict="uncertain", reason="The complete file exceeds the recheck budget")
     response, _ = await LiteLLMAIHandler().chat_completion(
         model=get_settings().config.model, system=system, user=user, temperature=0.0)
-    return Recheck.model_validate_json(response)
+    return parse_recheck(response)
+
+
+RECHECK_FENCE_RE = re.compile(r"\A```(?:json)?[ \t]*\r?\n(.*?)\r?\n?```\Z", re.DOTALL | re.IGNORECASE)
+
+
+def parse_recheck(response: str) -> Recheck:
+    """Accept the verdict as raw JSON or wrapped in a Markdown code fence.
+
+    Models routinely fence JSON even when told not to; the fenced text is the
+    same verdict, so it must not fail the run.
+    """
+    text = response.strip()
+    fenced = RECHECK_FENCE_RE.match(text)
+    if fenced:
+        text = fenced.group(1).strip()
+    return Recheck.model_validate_json(text)
 
 
 async def review_cycle(github, number, expected_head=None):
@@ -345,6 +368,10 @@ async def review_cycle(github, number, expected_head=None):
                       attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]), complete=False)
     check_id = github.start_check(head)
     reason = "Review did not complete"
+    # A run that raises is a failure. A run that finishes without covering
+    # the whole PR is neutral: it withholds approval (the receipt says so) but
+    # is not an error a merge queue should block on.
+    conclusion = "failure"
     try:
         before = github.threads(number)
         findings, complete, details = await analyze(pr["html_url"])
@@ -404,8 +431,9 @@ async def review_cycle(github, number, expected_head=None):
         reason = ("All findings published. Unresolved threads block approval."
                   if complete else "Coverage, parsing, a finding limit, or security concerns require another review.")
         reason += "\n\n" + details
+        conclusion = "success" if complete else "neutral"
     finally:
-        github.finish_check(check_id, receipt, reason)
+        github.finish_check(check_id, receipt, reason, conclusion)
     return receipt
 
 
