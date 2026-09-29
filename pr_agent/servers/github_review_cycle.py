@@ -277,29 +277,35 @@ async def analyze(pr_url):
         settings.set("config.publish_output", publish)
         settings.set("config.propagate_tool_errors", propagate)
 
-    findings = []
+    # Each candidate is (file, start, end, body). Suggestion metadata is model output that can arrive
+    # without a usable range (e.g. when self-reflection returns malformed JSON), so nothing is trusted
+    # until the range check below has normalized it.
+    candidates = []
     for issue in data["review"]["key_issues_to_review"]:
-        findings.append(Finding(issue["relevant_file"].strip(), int(issue["start_line"]), int(issue["end_line"]),
-                                f"**Qodo review: {issue['issue_header'].strip()}**\n\n{issue['issue_content'].strip()}"))
+        candidates.append((issue["relevant_file"], issue["start_line"], issue["end_line"],
+                           f"**Qodo review: {issue['issue_header'].strip()}**\n\n{issue['issue_content'].strip()}"))
     for suggestion in suggestions.data["code_suggestions"]:
         # Plain review comments, not automatically applicable patches. The original code and proposed
         # replacement remain available to the reviewer without offering unvalidated edits to GitHub.
-        body = f"**Qodo suggestion**\n\n{suggestion['suggestion_content'].strip()}"
-        if suggestion.get("improved_code"):
-            body += "\n\nProposed code:\n````\n" + suggestion["improved_code"].strip() + "\n````"
-        findings.append(Finding(suggestion["relevant_file"].strip(), int(suggestion["relevant_lines_start"]),
-                                int(suggestion["relevant_lines_end"]), body))
+        content = suggestion.get("suggestion_content")
+        body = f"**Qodo suggestion**\n\n{content.strip()}" if isinstance(content, str) and content.strip() else None
+        improved = suggestion.get("improved_code")
+        if body and isinstance(improved, str) and improved.strip():
+            body += "\n\nProposed code:\n````\n" + improved.strip() + "\n````"
+        candidates.append((suggestion.get("relevant_file"), suggestion.get("relevant_lines_start"),
+                           suggestion.get("relevant_lines_end"), body))
 
     unanchorable = []
     publishable = []
-    for finding in findings:
-        if suggestions._is_suggestion_line_range_valid({
-            "relevant_file": finding.path, "relevant_lines_start": finding.start,
-            "relevant_lines_end": finding.end,
-        }):
-            publishable.append(finding)
+    for path, start, end, body in candidates:
+        location = {"relevant_file": path.strip() if isinstance(path, str) else path,
+                    "relevant_lines_start": start, "relevant_lines_end": end}
+        # An unpublishable finding is a coverage gap, never a crash and never a silent drop.
+        if body and suggestions._is_suggestion_line_range_valid(location):
+            publishable.append(Finding(location["relevant_file"], location["relevant_lines_start"],
+                                       location["relevant_lines_end"], body))
         else:
-            unanchorable.append(f"{finding.path}:{finding.start}-{finding.end}")
+            unanchorable.append(f"{location['relevant_file']}:{start}-{end}")
 
     complete = (not unanchorable and not reviewer.remaining_files_list and not reviewer.review_failed_chunk_count
                 and not suggestions.remaining_files_list and not suggestions.failed_chunk_count

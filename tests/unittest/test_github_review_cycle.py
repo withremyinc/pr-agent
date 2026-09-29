@@ -439,6 +439,115 @@ async def test_analysis_completeness_uses_both_passes_and_limits(monkeypatch, de
     assert parsed_details["suggestion_parse_failures"] == (1 if defect == "parse" else 0)
 
 
+# Recorded from remy-ts#6209 (Qodo run 36527376403): the first object is closed with "}" and no comma,
+# so the whole self-reflection is unparseable and neither suggestion receives a line range.
+MALFORMED_SELF_REFLECTION = """{
+  "code_suggestions": [
+    {
+      "suggestion_summary": "Avoid redundant customer listing during verification",
+      "relevant_file": "app.py",
+      "relevant_lines_start": 2,
+      "relevant_lines_end": 3,
+      "suggestion_score": 6,
+      "why": "Checking pending first avoids unnecessary full customer enumerations.",
+      }
+    {
+      "suggestion_summary": "Stop concurrent workers early on error",
+      "relevant_file": "app.py",
+      "relevant_lines_start": 4,
+      "relevant_lines_end": 5,
+      "suggestion_score": 6,
+      "why": "Remaining workers keep consuming the queue after a worker throws.",
+    }
+  ]
+}"""
+
+
+def _suggestion(summary, **fields):
+    return {"one_sentence_summary": summary, "label": "possible issue", "relevant_file": "app.py",
+            "suggestion_content": f"{summary}.", "existing_code": "old()", "improved_code": "new()", **fields}
+
+
+async def _analyze_suggestions(monkeypatch, code_suggestions):
+    from types import SimpleNamespace
+
+    from pr_agent.algo.types import FilePatchInfo
+    from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+
+    head_file = "".join(f"line {number}\n" for number in range(1, 11))
+    suggestions = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    suggestions.git_provider = SimpleNamespace(diff_files=[
+        FilePatchInfo(base_file="", head_file=head_file, patch="", filename="app.py")])
+    suggestions.run = AsyncMock()
+    suggestions.data = {"code_suggestions": code_suggestions}
+    suggestions.remaining_files_list = []
+    suggestions.failed_chunk_count = 0
+    suggestions.parse_failure_count = 0
+    suggestions.prediction_list = [{"code_suggestions": code_suggestions}]
+    reviewer = SimpleNamespace(
+        run=AsyncMock(), prediction="valid",
+        prediction_data={"review": {"key_issues_to_review": [], "security_concerns": "No"}},
+        remaining_files_list=[], review_failed_chunk_count=0, _validate_review_schema=lambda data: True,
+    )
+    monkeypatch.setattr(cycle, "PRReviewer", lambda *args: reviewer)
+    monkeypatch.setattr(cycle, "PRCodeSuggestions", lambda *args: suggestions)
+    findings, complete, details = await REAL_ANALYZE("https://github.com/org/repo/pull/7")
+    return findings, complete, json.loads(details)
+
+
+async def test_malformed_self_reflection_is_incomplete_coverage_not_a_crash(monkeypatch):
+    from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+
+    unanchored = [_suggestion("Avoid redundant customer listing during verification"),
+                  _suggestion("Stop concurrent workers early on error")]
+    await PRCodeSuggestions.__new__(PRCodeSuggestions).analyze_self_reflection_response(
+        {"code_suggestions": unanchored}, MALFORMED_SELF_REFLECTION)
+    assert all("relevant_lines_start" not in suggestion for suggestion in unanchored)
+    valid = _suggestion("Check the result", relevant_lines_start=7, relevant_lines_end=8)
+
+    findings, complete, details = await _analyze_suggestions(monkeypatch, [*unanchored, valid])
+
+    assert [(finding.path, finding.start, finding.end) for finding in findings] == [("app.py", 7, 8)]
+    assert not complete
+    assert details["unanchorable_findings"] == ["app.py:None-None", "app.py:None-None"]
+
+
+@pytest.mark.parametrize("fields", [
+    {"relevant_lines_start": None, "relevant_lines_end": 3},
+    {"relevant_lines_start": -1, "relevant_lines_end": -1},
+    {"relevant_lines_start": 5, "relevant_lines_end": 2},
+    {"relevant_lines_start": "two", "relevant_lines_end": 3},
+    {"relevant_lines_start": 2.5, "relevant_lines_end": 3},
+    {"relevant_lines_start": 2, "relevant_lines_end": 99},
+    {"relevant_lines_start": 2, "relevant_lines_end": 3, "relevant_file": None},
+    {"relevant_lines_start": 2, "relevant_lines_end": 3, "relevant_file": "missing.py"},
+    {"relevant_lines_start": 2, "relevant_lines_end": 3, "suggestion_content": None},
+])
+async def test_suggestion_without_a_usable_anchor_blocks_completion(monkeypatch, fields):
+    findings, complete, details = await _analyze_suggestions(monkeypatch, [_suggestion("Broken", **fields)])
+    assert findings == []
+    assert not complete
+    assert len(details["unanchorable_findings"]) == 1
+
+
+async def test_valid_suggestions_publish_and_complete_the_review(monkeypatch):
+    analyzed = await _analyze_suggestions(monkeypatch, [
+        _suggestion("Check the result", relevant_lines_start="2", relevant_lines_end=3),
+        _suggestion("Explain the fallback", relevant_lines_start=5, relevant_lines_end=5, improved_code=None),
+    ])
+    findings, complete, details = analyzed
+    assert [(finding.path, finding.start, finding.end) for finding in findings] == [("app.py", 2, 3), ("app.py", 5, 5)]
+    assert findings[0].body == "**Qodo suggestion**\n\nCheck the result.\n\nProposed code:\n````\nnew()\n````"
+    assert "Proposed code" not in findings[1].body
+    assert complete and details["unanchorable_findings"] == []
+
+    github = FakeGitHub()
+    monkeypatch.setattr(cycle, "analyze", AsyncMock(return_value=analyzed[:2] + (json.dumps(details),)))
+    receipt = await cycle.review_cycle(github, 7)
+    assert github.publications == findings
+    assert receipt.complete and github.checks[-1]["conclusion"] == "success"
+
+
 @pytest.mark.parametrize("blocked_by", ["workflow", "artifact", "identity"])
 async def test_fixed_receipt_cannot_resolve_before_trust_and_identity_checks(monkeypatch, blocked_by):
     github = FakeGitHub()
