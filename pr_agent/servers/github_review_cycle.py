@@ -234,9 +234,18 @@ class GitHub:
         from urllib.parse import quote
 
         workflow = quote(get_settings().github_review_cycle.review_workflow.rsplit("/", 1)[-1], safe="")
-        runs = self.request("GET", self.repo(f"actions/workflows/{workflow}/runs"),
-                            params={"head_sha": head, "event": "pull_request", "per_page": 1})["workflow_runs"]
-        return runs[0]["id"] if runs else None
+        page = 1
+        while True:
+            runs = self.request("GET", self.repo(f"actions/workflows/{workflow}/runs"),
+                                params={"head_sha": head, "event": "pull_request", "per_page": 100,
+                                        "page": page})["workflow_runs"]
+            # A run whose jobs were all skipped (e.g. an unrelated label event) reviewed nothing.
+            for run in runs:
+                if run["conclusion"] != "skipped":
+                    return run["id"]
+            if len(runs) < 100:
+                return None
+            page += 1
 
     def trusted_workflow(self, head, base):
         path = get_settings().github_review_cycle.review_workflow
