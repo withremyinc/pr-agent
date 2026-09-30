@@ -376,6 +376,17 @@ async def test_newer_review_run_invalidates_an_older_success_receipt():
     assert not github.reviews
 
 
+def test_latest_review_run_ignores_skipped_runs():
+    github = cycle.GitHub("org/repo", "token")
+    pages = {1: [{"id": 126, "conclusion": "skipped"}] * 100,
+             2: [{"id": 125, "conclusion": "skipped"}, {"id": 124, "conclusion": None},
+                 {"id": 123, "conclusion": "success"}]}
+    github.request = lambda method, path, params: {"workflow_runs": pages[params["page"]]}
+    assert github.latest_review_run("head") == 124
+    pages[2] = [{"id": 125, "conclusion": "skipped"}]
+    assert github.latest_review_run("head") is None
+
+
 async def test_workflow_edits_require_human_review():
     github = FakeGitHub()
     await cycle.review_cycle(github, 7)
